@@ -26,16 +26,6 @@ impl From<DriverError> for CudaWriterError {
     }
 }
 
-struct Layout<const RANK: usize> {
-    shape: [usize; RANK],
-    strides: [isize; RANK],
-}
-
-struct Dimension {
-    size_px: usize,
-    tile_size_px: usize,
-}
-
 /*
  CudaWriter
  Enables high-speed streaming of data to the gpu.
@@ -70,8 +60,6 @@ impl HostBuffer {
         let event = ctx.new_event(Some(
             cudarc::driver::sys::CUevent_flags::CU_EVENT_DISABLE_TIMING,
         ))?;
-
-        tracing::debug!("Allocated write-combined host buffer");
         Ok(Self {
             ptr: ptr as *mut u8,
             cap: capacity,
@@ -88,13 +76,11 @@ impl HostBuffer {
     fn available(&self) -> usize {
         self.capacity() - self.len
     }
-       
 }
 
 impl Drop for HostBuffer {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
-            tracing::trace!("Freeing host buffer");
             unsafe {
                 sys::cudaFreeHost(self.ptr as *mut std::ffi::c_void);
             }
@@ -102,6 +88,7 @@ impl Drop for HostBuffer {
     }
 }
 
+#[derive(Debug)]
 enum BufferState {
     Filling,
     Flushing,
@@ -151,14 +138,19 @@ impl CudaWriter {
     }
 
     /// Non-blocking prefix write
-    #[tracing::instrument(skip(self, src), fields(src_len = src.len()))]
+    #[tracing::instrument(skip(self, src), fields(src_len = src.len(), active = self.active))]
     fn write(&mut self, src: &[u8]) -> Result<usize, CudaWriterError> {
         self.try_reclaim();
 
         let buf = &mut self.host[self.active];
 
         if !matches!(buf.state, BufferState::Filling) {
-            tracing::warn!(active = self.active, "Active buffer not in Filling state");
+            // tracing::warn!(
+            //     active = self.active,
+            //     buf0_state = ?self.host[0].state,
+            //     buf1_state = ?self.host[1].state,
+            //     "Active buffer not in Filling state - would block"
+            // );
             return Ok(0);
         }
 
@@ -172,8 +164,6 @@ impl CudaWriter {
         }
         buf.len += n;
 
-        tracing::trace!(bytes_written = n, buffer_filled = buf.len, buffer_capacity = buf.capacity());
-
         if buf.len == buf.capacity() {
             tracing::debug!(buffer_idx = self.active, "Buffer full, flushing");
             self.flush_active()?;
@@ -185,9 +175,11 @@ impl CudaWriter {
     /// Polls flushing buffers to reclaim them
     fn try_reclaim(&mut self) {
         for (idx, buf) in self.host.iter_mut().enumerate() {
-            if let BufferState::Flushing = buf.state && unsafe { query(buf.event.cu_event()).is_ok() } {
-                tracing::debug!(buffer_idx = idx, "Buffer reclaimed");
-                buf.state = BufferState::Filling;
+            if let BufferState::Flushing = buf.state {
+                if unsafe { query(buf.event.cu_event()) }.is_ok() {
+                    tracing::debug!(buffer_idx = idx, "Buffer reclaimed");
+                    buf.state = BufferState::Filling;
+                }
             }
         }
     }
@@ -195,23 +187,23 @@ impl CudaWriter {
     #[tracing::instrument(skip(self), fields(buffer_idx = self.active))]
     fn flush_active(&mut self) -> Result<(), CudaWriterError> {
         let idx = self.active;
-        let host_ptr = self.host[idx].ptr;
         let len = self.host[idx].len;
 
         tracing::debug!(bytes = len, "Flushing buffer to device");
 
+        // Use Driver API for async memory copy
         unsafe {
-            let result = sys::cudaMemcpyAsync(
-                self.device_dst as *mut std::ffi::c_void,
-                host_ptr as *const std::ffi::c_void,
+            use cudarc::driver::sys;
+            let result = sys::cuMemcpyHtoDAsync_v2(
+                self.device_dst as sys::CUdeviceptr,
+                self.host[idx].ptr as *const std::ffi::c_void,
                 len,
-                sys::cudaMemcpyKind::cudaMemcpyHostToDevice,
-                self.stream.cu_stream() as sys::cudaStream_t,
+                self.stream.cu_stream(),
             );
 
-            if result != sys::cudaError_t::cudaSuccess {
-                tracing::error!(?result, "cudaMemcpyAsync failed");
-                return Err(RuntimeError(result).into());
+            if result != sys::CUresult::CUDA_SUCCESS {
+                tracing::error!(?result, "cuMemcpyHtoDAsync failed");
+                return Err(DriverError(result).into());
             }
         }
 
@@ -274,5 +266,3 @@ impl Drop for CudaWriter {
         }
     }
 }
-
-
