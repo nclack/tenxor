@@ -1,5 +1,5 @@
 {
-  description = "Development environment for tensorstream";
+  description = "Development environment for tenxor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

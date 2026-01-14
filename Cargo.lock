@@ -488,7 +488,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tensorstream"
+name = "tenxor"
 version = "0.1.0"
 dependencies = [
  "bindgen",

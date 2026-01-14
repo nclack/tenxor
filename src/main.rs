@@ -3,7 +3,7 @@ use clap::Parser;
 use std::io::Write;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use tensorstream::CudaWriter;
+use tenxor::CudaWriter;
 
 #[derive(Parser, Debug)]
 #[command(name = "benchmark")]
