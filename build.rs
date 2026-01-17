@@ -1,172 +1,134 @@
 use std::env;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
-    if cfg!(target_os = "windows") {
-        configure_windows();
-    } else if cfg!(target_os = "linux") {
-        configure_linux();
-    } else {
-        panic!("Unsupported platform");
-    }
-
+    check_required_env_vars();
+    configure_linking();
+    compile_cuda();
     generate_bindings();
 }
 
-fn configure_windows() {
-    // Link with CUDA 12.9 and nvCOMP v4.2 libraries
-    println!("cargo:rustc-link-search=native=C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.9\\lib\\x64");
-    println!("cargo:rustc-link-search=native=C:\\Program Files\\NVIDIA nvCOMP\\v4.2\\lib\\12");
+fn check_required_env_vars() {
+    let required = [
+        "AR",
+        "CUDA_INCLUDE",
+        "CUDA_LIB",
+        "CUDA_NVCC_INCLUDE",
+        "NVCC_CCBIN",
+        "NVCC_CFLAGS",
+        "NVCOMP_INCLUDE",
+        "NVCOMP_LIB",
+    ];
 
-    // Link with static libraries
+    let missing: Vec<&str> = required
+        .iter()
+        .filter(|var| env::var(var).is_err())
+        .copied()
+        .collect();
+
+    if !missing.is_empty() {
+        eprintln!("Error: Missing required environment variables:");
+        for var in &missing {
+            eprintln!("  - {}", var);
+        }
+        eprintln!("\nPlease set these environment variables in your flake.nix before building.");
+        panic!("Missing required environment variables");
+    }
+}
+
+fn get_env(var: &str) -> String {
+    env::var(var).unwrap_or_else(|_| panic!("Required environment variable {} is not set.", var))
+}
+
+fn configure_linking() {
+    println!("cargo:rustc-link-search=native={}", get_env("CUDA_LIB"));
+    println!("cargo:rustc-link-search=native={}", get_env("NVCOMP_LIB"));
     println!("cargo:rustc-link-lib=static=cudart_static");
     println!("cargo:rustc-link-lib=static=nvcomp_static");
     println!("cargo:rustc-link-lib=static=nvcomp_device_static");
 
-    // Required system libraries for static linking
-    println!("cargo:rustc-link-lib=kernel32");
-    println!("cargo:rustc-link-lib=user32");
-    println!("cargo:rustc-link-lib=advapi32");
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-lib=cuda");
+        println!("cargo:rustc-link-lib=dl");
+        println!("cargo:rustc-link-lib=pthread");
+        println!("cargo:rustc-link-lib=rt");
+        println!("cargo:rustc-link-lib=stdc++");
+    }
 }
 
+fn compile_cuda() {
+    let out_dir = PathBuf::from(get_env("OUT_DIR"));
+    let obj_path = out_dir.join("transpose.o");
+    let lib_path = out_dir.join("libtranspose.a");
 
-fn find_nvcc_include_path() -> Option<String> {
-    env::var("CUDA_NVCC_PATH")
-        .ok()
-        .map(|nvcc_path| format!("{}/include", nvcc_path))
-}
+    let nvcc_cflags = get_env("NVCC_CFLAGS");
 
-fn find_cuda_include_paths() -> Vec<String> {
-    let mut paths = Vec::new();
+    let nvcc_output = Command::new("nvcc")
+        .arg("-c")
+        .arg("src/transpose.cu")
+        .arg("-o")
+        .arg(&obj_path)
+        .arg("-I")
+        .arg(get_env("CUDA_INCLUDE"))
+        .arg("-ccbin")
+        .arg(get_env("NVCC_CCBIN"))
+        .args(nvcc_cflags.split_whitespace())
+        .output()
+        .expect("Failed to execute nvcc");
 
-    // Get cuda runtime headers from pkg-config
-    if let Ok(cuda_info) = pkg_config::Config::new().probe("cudart") {
-        paths.extend(
-            cuda_info
-                .include_paths
-                .iter()
-                .map(|p| p.display().to_string()),
+    if !nvcc_output.status.success() {
+        panic!(
+            "nvcc failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&nvcc_output.stdout),
+            String::from_utf8_lossy(&nvcc_output.stderr)
         );
     }
 
-    // Also need cuda compiler headers (for crt/host_config.h, etc.)
-    if let Some(nvcc_include) = find_nvcc_include_path() {
-        paths.push(nvcc_include);
+    let ar_output = Command::new(get_env("AR"))
+        .arg("rcs")
+        .arg(&lib_path)
+        .arg(&obj_path)
+        .output()
+        .expect("Failed to execute ar");
+
+    if !ar_output.status.success() {
+        panic!(
+            "ar failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&ar_output.stdout),
+            String::from_utf8_lossy(&ar_output.stderr)
+        );
     }
 
-    // Fallback to CUDA_ROOT env var or standard path
-    if paths.is_empty() {
-        if let Ok(cuda_root) = env::var("CUDA_ROOT") {
-            paths.push(format!("{}/include", cuda_root));
-        } else {
-            paths.push("/usr/local/cuda/include".to_string());
-        }
-    }
-
-    paths
-}
-
-
-fn find_nvcomp_include_paths() -> Vec<String> {
-    if let Ok(result) = pkg_config::Config::new().probe("nvcomp") {
-        return result
-            .include_paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
-    }
-
-    if let Ok(nvcomp_include) = env::var("NVCOMP_INCLUDE") {
-        return vec![nvcomp_include];
-    }
-
-    if let Ok(nvcomp_lib) = env::var("NVCOMP_LIB") {
-        return vec![format!("{}/include", nvcomp_lib)];
-    }
-
-    vec![
-        "/usr/local/include".to_string(),
-        "/usr/include/nvcomp_12".to_string(),
-    ]
-}
-
-fn configure_linux() {
-    // Use pkg-config for CUDA driver library (dynamic)
-    if pkg_config::Config::new().probe("cuda").is_err() {
-        eprintln!("Warning: pkg-config couldn't find cuda");
-    }
-
-    // Use pkg-config for CUDA runtime library (static)
-    if pkg_config::Config::new()
-        .statik(true)
-        .probe("cudart")
-        .is_err()
-    {
-        eprintln!("Warning: pkg-config couldn't find cudart");
-    }
-
-    // Use pkg-config for nvCOMP library (static)
-    if pkg_config::Config::new()
-        .statik(true)
-        .probe("nvcomp")
-        .is_err()
-    {
-        eprintln!("Warning: pkg-config couldn't find nvcomp");
-    }
-
-    // System libraries needed for static linking
-    println!("cargo:rustc-link-lib=dl");
-    println!("cargo:rustc-link-lib=pthread");
-    println!("cargo:rustc-link-lib=rt");
-    println!("cargo:rustc-link-lib=stdc++");
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=transpose");
+    println!("cargo:rerun-if-changed=src/transpose.cu");
+    println!("cargo:rerun-if-changed=src/transpose.h");
 }
 
 fn generate_bindings() {
-    let mut builder = bindgen::Builder::default()
+    let bindings = bindgen::Builder::default()
         .header("wrapper.h")
-        .allowlist_type("nvcompStatus_t")
+        .clang_arg(format!("-I{}", get_env("CUDA_INCLUDE")))
+        .clang_arg(format!("-I{}", get_env("CUDA_NVCC_INCLUDE")))
+        .clang_arg(format!("-I{}", get_env("NVCOMP_INCLUDE")))
+        .clang_arg(format!("-I{}", get_env("LIBCXX_INCLUDE_PATH")))
+        .allowlist_function("tiled")
+        .allowlist_function("nvcomp.*")
+        .allowlist_type("nvcomp.*")
         .allowlist_type("cudaStream_t")
-        .allowlist_type("nvcompBatchedZstdCompressOpts_t")
-        .allowlist_type("nvcompBatchedZstdDecompressOpts_t")
-        .allowlist_type("nvcompBatchedLZ4CompressOpts_t")
-        .allowlist_type("nvcompBatchedLZ4DecompressOpts_t")
-        .allowlist_type("nvcompType_t")
-        .allowlist_type("nvcompDecompressBackend_t")
-        .allowlist_function("nvcompBatchedZstdDecompressAsync")
-        .allowlist_function("nvcompBatchedZstdDecompressGetTempSizeAsync")
-        .allowlist_function("nvcompBatchedZstdCompressAsync")
-        .allowlist_function("nvcompBatchedZstdCompressGetTempSizeAsync")
-        .allowlist_function("nvcompBatchedLZ4DecompressAsync")
-        .allowlist_function("nvcompBatchedLZ4DecompressGetTempSizeAsync")
-        .allowlist_function("nvcompBatchedLZ4CompressAsync")
-        .allowlist_function("nvcompBatchedLZ4CompressGetTempSizeAsync")
+        .allowlist_type("Layout")
+        .allowlist_type("Dimension")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Silence naming convention warnings
         .derive_debug(false)
         .layout_tests(false)
-        .generate_comments(false);
-
-    // Add platform-specific include paths
-    if cfg!(target_os = "windows") {
-        builder = builder
-            .clang_arg("-IC:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v12.9\\include")
-            .clang_arg("-IC:\\Program Files\\NVIDIA nvCOMP\\v4.2\\include");
-    } else if cfg!(target_os = "linux") {
-        for path in find_cuda_include_paths() {
-            builder = builder.clang_arg(format!("-I{}", path));
-        }
-
-        for path in find_nvcomp_include_paths() {
-            builder = builder.clang_arg(format!("-I{}", path));
-        }
-    }
-
-    let bindings = builder
+        .generate_comments(false)
         .generate()
-        .expect("Failed to generate nvCOMP bindings");
+        .expect("Failed to generate bindings");
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_path = PathBuf::from(get_env("OUT_DIR"));
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Failed to write bindings");
 }
+

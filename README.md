@@ -34,13 +34,31 @@ interface processes these spans, buffering them for GPU transfer and processing.
 - **CUDA Toolkit** (12.8 or later) - provides CUDA runtime and nvcc compiler
 - **nvcomp** (5.x) - NVIDIA compression library for GPU
 
-## Building
+## Build Requirements
+
+The build requires the following environment variables to be set:
+
+- **`CUDA_INCLUDE`** - Path to CUDA runtime headers
+  - Used by: CUDA compilation (nvcc), binding generation (bindgen)
+- **`CUDA_NVCC_INCLUDE`** - Path to CUDA compiler headers (contains `crt/host_config.h`)
+  - Used by: Binding generation (bindgen)
+- **`CUDA_LIB`** - Path to CUDA libraries
+  - Used by: Linking
+- **`NVCOMP_INCLUDE`** - Path to nvcomp headers
+  - Used by: Binding generation (bindgen)
+- **`NVCOMP_LIB`** - Path to nvcomp libraries
+  - Used by: Linking
+
+The `nvcc` compiler must be available in your PATH.
+
+### NixOS/Nix
+
+The provided `flake.nix` automatically sets up the required environment variables:
 
 ```bash
+nix develop
 cargo build
 ```
-
-The build uses `pkg-config` to find libraries.
 
 ## Project Structure
 

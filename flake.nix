@@ -35,19 +35,33 @@
           };
 
           nativeBuildInputs = with pkgs; [
-            pkg-config
             cudaPackages.cuda_nvcc
+            llvmPackages_19.libcxx
           ];
 
           buildInputs = with pkgs; [
+            bintools
             cudaPackages.cuda_cudart
             cudaPackages.nvcomp
           ];
 
+          # Set AR, the archiver tool
+          AR = "${pkgs.bintools}/bin/ar";
+
+          # Set NVCC_CCBIN, the host compiler for nvcc
+          NVCC_CCBIN = "${pkgs.clang}/bin/clang++";
+
+          # Set NVCC_CFLAGS, flags for the nvcc command
+          # sm_86 is for Ampere architecture, change if you have a different GPU
+          NVCC_CFLAGS = "-cudart=static -arch=sm_86";
+
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          NVCOMP_LIB = "${pkgs.cudaPackages.nvcomp.static}";
+          LIBCXX_INCLUDE_PATH = "${pkgs.llvmPackages_19.libcxx.dev}/include/c++/v1";
+          CUDA_INCLUDE = "${pkgs.lib.getOutput "dev" pkgs.cudaPackages.cuda_cudart}/include";
+          CUDA_NVCC_INCLUDE = "${pkgs.cudaPackages.cuda_nvcc}/include";
+          CUDA_LIB = "${pkgs.lib.getOutput "static" pkgs.cudaPackages.cuda_cudart}/lib";
           NVCOMP_INCLUDE = "${pkgs.cudaPackages.nvcomp.include}/include";
-          CUDA_NVCC_PATH = "${pkgs.cudaPackages.cuda_nvcc}";
+          NVCOMP_LIB = "${pkgs.cudaPackages.nvcomp.static}/lib";
 
           meta = {
             description = "NVCOMP compression benchmark";
@@ -55,10 +69,11 @@
           };
         };
 
-        devShells.default = (pkgs.mkShell.override { stdenv = pkgs.clangStdenv; }) {
+        devShells.default = (pkgs.mkShell.override { stdenv = pkgs.llvmPackages_19.stdenv; }) {
           name = cargoToml.package.name;
 
           buildInputs = with pkgs; [
+            bintools
             clang-tools
             bacon
             cargo
@@ -67,21 +82,30 @@
             cudaPackages.cuda_nvcc
             cudaPackages.nvcomp
             lldb
-            llvmPackages.libcxx
-            pkg-config
+            llvmPackages_19.libcxx
             rust-analyzer
             rustc
             rustfmt
             taplo
           ];
 
-          CPATH = "${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
-          CPLUS_INCLUDE_PATH = "${pkgs.llvmPackages.libcxx.dev}/include/c++/v1";
+          # Set AR, the archiver tool
+          AR = "${pkgs.bintools}/bin/ar";
+
+          # Set NVCC_CCBIN, the host compiler for nvcc
+          NVCC_CCBIN = "${pkgs.clang}/bin/clang++";
+
+          # Set NVCC_CFLAGS, flags for the nvcc command
+          # sm_86 is for Ampere architecture, change if you have a different GPU
+          NVCC_CFLAGS = "-cudart=static -arch=sm_86";
 
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-          NVCOMP_LIB = "${pkgs.cudaPackages.nvcomp.static}";
+          LIBCXX_INCLUDE_PATH = "${pkgs.llvmPackages_19.libcxx.dev}/include/c++/v1";
+          CUDA_INCLUDE = "${pkgs.lib.getOutput "dev" pkgs.cudaPackages.cuda_cudart}/include";
+          CUDA_NVCC_INCLUDE = "${pkgs.cudaPackages.cuda_nvcc}/include";
+          CUDA_LIB = "${pkgs.lib.getOutput "static" pkgs.cudaPackages.cuda_cudart}/lib";
           NVCOMP_INCLUDE = "${pkgs.cudaPackages.nvcomp.include}/include";
-          CUDA_NVCC_PATH = "${pkgs.cudaPackages.cuda_nvcc}";
+          NVCOMP_LIB = "${pkgs.cudaPackages.nvcomp.static}/lib";
         };
       }
     );
